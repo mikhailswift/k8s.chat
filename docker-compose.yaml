@@ -1,0 +1,11 @@
+version: "3.8"
+services:
+  chat:
+    build: ./
+    environment:
+      - NATS_URL=nats://nats:4222
+    ports:
+      - "8080:8080/tcp"
+
+  nats:
+    image: nats
