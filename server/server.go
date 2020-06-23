@@ -7,33 +7,54 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"nhooyr.io/websocket"
 )
 
 type ChatServer struct {
 	subscribers     map[chan []byte]struct{}
 	subscriberMutex *sync.Mutex
-	mux             http.ServeMux
 
-	outgoingMsgChan chan<- []byte
+	mux http.ServeMux
+
+	natsConn   *nats.Conn
+	msgOutChan chan []byte
 }
 
-func New(incomingMsgChan <-chan []byte, outgoingMsgChan chan<- []byte) *ChatServer {
+func New(natsUrl, natsSubject string) (*ChatServer, error) {
+	if natsUrl == "" {
+		natsUrl = nats.DefaultURL
+	}
+
+	nc, err := nats.Connect(natsUrl)
+	if err != nil {
+		return nil, err
+	}
+
 	server := &ChatServer{
 		subscribers:     make(map[chan []byte]struct{}),
 		subscriberMutex: &sync.Mutex{},
-		outgoingMsgChan: outgoingMsgChan,
+		natsConn:        nc,
+		msgOutChan:      make(chan []byte, 100),
 	}
 
-	server.mux.HandleFunc("/subscribe", server.subscribeHandler)
+	server.natsConn.Subscribe(natsSubject, func(m *nats.Msg) {
+		server.publish(m.Data)
+	})
 
 	go func() {
-		for msg := range incomingMsgChan {
-			server.publish(msg)
+		for msg := range server.msgOutChan {
+			server.natsConn.Publish(natsSubject, msg)
 		}
 	}()
 
-	return server
+	server.mux.HandleFunc("/subscribe", server.subscribeHandler)
+	return server, nil
+}
+
+func (s *ChatServer) Close() error {
+	close(s.msgOutChan)
+	return s.natsConn.Drain()
 }
 
 func (s *ChatServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -47,6 +68,7 @@ func (s *ChatServer) subscribeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	log.Print("client subscribed")
 	err = s.subscribe(r.Context(), conn)
 	log.Printf("client left %v", err)
 	conn.Close(websocket.StatusInternalError, "")
@@ -58,7 +80,7 @@ func (s *ChatServer) publish(msg []byte) {
 		select {
 		case sub <- msg:
 		default:
-			log.Printf("skipping slow client")
+			log.Print("skipping slow client")
 		}
 	}
 	s.subscriberMutex.Unlock()
@@ -84,7 +106,11 @@ func (s *ChatServer) subscribe(ctx context.Context, conn *websocket.Conn) error 
 				return
 			}
 
-			s.outgoingMsgChan <- msg
+			select {
+			case s.msgOutChan <- msg:
+			default:
+				log.Print("received message throttled")
+			}
 		}
 	}()
 

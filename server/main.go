@@ -8,8 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"time"
-
-	"github.com/nats-io/nats.go"
 )
 
 const (
@@ -19,39 +17,16 @@ const (
 
 func main() {
 	natsUrl := os.Getenv("NATS_URL")
-	if natsUrl == "" {
-		natsUrl = nats.DefaultURL
-	}
-
-	nc, err := nats.Connect(natsUrl)
-	if err != nil {
-		log.Printf("failed to connect to nats: %v", err)
-		return
-	}
-
-	defer nc.Drain()
-	inChan := make(chan []byte, 100)
-	outChan := make(chan []byte, 100)
-	defer close(inChan)
-	defer close(outChan)
-
-	go func() {
-		for msg := range outChan {
-			nc.Publish(natsSubject, msg)
-		}
-	}()
-
-	nc.Subscribe(natsSubject, func(m *nats.Msg) {
-		select {
-		case inChan <- m.Data:
-		default:
-			log.Print("throttled message")
-		}
-	})
-
 	listenAddr := os.Getenv("K8SCHAT_LISTEN")
 	if listenAddr == "" {
 		listenAddr = defaultListenAddr
+	}
+
+	server, err := New(natsUrl, natsSubject)
+	defer server.Close()
+	if err != nil {
+		log.Printf("failed to start chat server: %v", err)
+		return
 	}
 
 	listener, err := net.Listen("tcp", listenAddr)
@@ -61,7 +36,6 @@ func main() {
 	}
 
 	log.Printf("listening on %v", listenAddr)
-	server := New(inChan, outChan)
 	httpServer := &http.Server{
 		Handler:      server,
 		ReadTimeout:  10 * time.Second,
@@ -79,7 +53,7 @@ func main() {
 	case err := <-errChan:
 		log.Printf("failed to start server: %v", err)
 	case <-signals:
-		log.Printf("caught interrupt signal")
+		log.Print("caught interrupt signal")
 	}
 
 	httpServer.Shutdown(context.Background())
