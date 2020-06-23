@@ -2,10 +2,21 @@ version: "3.8"
 services:
   chat:
     build: ./
+    depends_on:
+      - nats
     environment:
       - NATS_URL=nats://nats:4222
-    ports:
-      - "8080:8080/tcp"
+    expose:
+      - "8080/tcp"
 
   nats:
     image: nats
+
+  nginx:
+    image: nginx
+    depends_on:
+      - chat
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:8080/tcp"
